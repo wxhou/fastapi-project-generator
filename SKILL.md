@@ -40,7 +40,6 @@ project/
 │   │   ├── __init__.py
 │   │   ├── logger.py           # Logging setup
 │   │   └── helpers.py          # Helper functions
-│   └── main.py                 # Application entry point
 ├── common/                     # Shared modules
 │   ├── response.py             # Response wrappers (response_ok/response_err)
 │   ├── security.py             # Password hashing, JWT
@@ -54,6 +53,7 @@ project/
 │   ├── Dockerfile
 │   └── docker-compose.yml
 ├── requirements.txt            # Python dependencies
+├── main.py                     # Application entry point (root directory)
 ├── .env                        # Environment variables
 ├── .env.example                # Environment template
 ├── .gitignore
@@ -301,10 +301,80 @@ async_session = async_sessionmaker(
 )
 ```
 
+### Redis Cache
+
+```python
+# app/extensions/cache.py
+import redis.asyncio as aioredis
+from app.settings import settings
+
+
+async def get_redis() -> aioredis.Redis:
+    """Dependency for Redis connection"""
+    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+
+class RedisCache:
+    """Redis cache utility"""
+
+    def __init__(self):
+        self.redis: aioredis.Redis = None
+
+    async def connect(self):
+        self.redis = await get_redis()
+
+    async def close(self):
+        if self.redis:
+            await self.redis.close()
+
+    async def get(self, key: str) -> str:
+        return await self.redis.get(key)
+
+    async def set(self, key: str, value: str, expire: int = 3600):
+        await self.redis.set(key, value, ex=expire)
+
+    async def delete(self, key: str):
+        await self.redis.delete(key)
+```
+
+### MongoDB
+
+```python
+# app/extensions/mongo.py
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+from app.settings import settings
+
+
+class MongoDB:
+    client: AsyncIOMotorClient = None
+    db: AsyncIOMotorDatabase = None
+
+
+mongodb = MongoDB()
+
+
+async def get_mongo() -> AsyncIOMotorDatabase:
+    """Dependency for MongoDB connection"""
+    return mongodb.db
+
+
+async def connect_mongo():
+    """Connect to MongoDB on startup"""
+    mongodb.client = AsyncIOMotorClient(settings.MONGODB_URL)
+    mongodb.db = mongodb.client[settings.MONGODB_DB]
+
+
+async def close_mongo():
+    """Close MongoDB connection on shutdown"""
+    if mongodb.client:
+        mongodb.client.close()
+```
+
 ```python
 # app/extensions/__init__.py
 from app.extensions.db import session, async_session
 from app.extensions.cache import get_redis, aioredis
+from app.extensions.mongo import get_mongo
 
 
 async def get_db() -> AsyncSession:
@@ -492,7 +562,7 @@ async def user_info(
 ## Main Application Entry
 
 ```python
-# app/main.py
+# main.py (project root)
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -537,7 +607,7 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ```yaml
