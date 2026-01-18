@@ -23,55 +23,41 @@ project/
 │   │       └── tasks.py        # Celery tasks
 │   ├── core/                   # Core components
 │   │   ├── __init__.py
-│   │   ├── config.py           # Settings (from pydantic-settings)
-│   │   ├── exceptions.py       # Custom exceptions
-│   │   ├── middleware.py       # CORS, compression, etc.
-│   │   └── security.py         # JWT, password hashing (pwdlib)
-│   ├── db/                     # Database layer
+│   │   ├── exceptions.py       # Custom exception handlers
+│   │   ├── middleware.py       # CORS, compression, rate limiting
+│   │   └── oauth2.py           # JWT authentication
+│   ├── extensions/             # Extensions layer
 │   │   ├── __init__.py
-│   │   ├── base.py             # Base class for models
-│   │   ├── session.py          # Session management
-│   │   └── repositories.py     # Generic repository pattern
-│   ├── schemas/                # Shared schemas
-│   │   └── __init__.py
-│   ├── tasks/                  # Celery configuration
-│   │   ├── __init__.py
-│   │   ├── celery_app.py       # Celery instance
-│   │   └── worker.py           # Task definitions
-│   ├── cache/                  # Redis cache layer
-│   │   ├── __init__.py
-│   │   └── redis.py            # Redis client
-│   ├── mongo/                  # MongoDB layer (if needed)
-│   │   ├── __init__.py
-│   │   └── client.py           # Motor client
+│   │   ├── db.py               # SQLAlchemy sync/async engines
+│   │   ├── cache.py            # Redis client
+│   │   └── mongo.py            # MongoDB Motor client
+│   ├── settings/               # Configuration management
+│   │   ├── __init__.py         # Settings loader
+│   │   ├── development.py      # Development config
+│   │   ├── testing.py          # Testing config
+│   │   └── production.py       # Production config
 │   ├── utils/                  # Utilities
 │   │   ├── __init__.py
 │   │   ├── logger.py           # Logging setup
 │   │   └── helpers.py          # Helper functions
 │   └── main.py                 # Application entry point
+├── common/                     # Shared modules
+│   ├── response.py             # Response wrappers (response_ok/response_err)
+│   ├── security.py             # Password hashing, JWT
+│   ├── pagination.py           # Custom pagination
+│   └── error.py                # Custom exceptions
 ├── tests/                      # Test suite
-│   ├── __init__.py
-│   ├── conftest.py
-│   ├── test_api/
-│   └── test_db/
 ├── alembic/                    # Database migrations
 │   ├── versions/
 │   └── env.py
 ├── docker/                     # Docker configuration
 │   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── .dockerignore
-├── scripts/                    # Utility scripts
-│   └── init_db.py
+│   └── docker-compose.yml
 ├── requirements.txt            # Python dependencies
-├── requirements-dev.txt        # Development dependencies
-├── requirements-test.txt       # Test dependencies
 ├── .env                        # Environment variables
 ├── .env.example                # Environment template
 ├── .gitignore
-├── alembic.ini
-├── pyproject.toml              # Poetry/pip config
-└── README.md
+└── alembic.ini
 ```
 
 ## Core Dependencies
@@ -80,21 +66,24 @@ Use these versions as baseline:
 
 ```txt
 # Core
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 
 # Database
 sqlalchemy>=2.0.25
 alembic>=1.13.0
-psycopg2-binary>=2.9.9  # or asyncmy for async
+asyncmy>=0.2.10  # Async MySQL driver
 redis>=5.0.1
-motor>=3.3.0  # MongoDB async
+motor>=3.3.0     # MongoDB async
 
 # Auth
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4  # or pwdlib[argon2]
+PyJWT>=2.10.0
+pwdlib[argon2]>=0.3.0
+
+# Rate limiting
+slowapi>=0.1.9
 
 # Tasks
 celery>=5.3.0
@@ -105,149 +94,261 @@ python-multipart>=0.0.6
 python-dotenv>=1.0.0
 loguru>=0.7.0
 httpx>=0.26.0
+limits>=5.6.0
 ```
 
 ## Configuration Management
 
-Use Pydantic Settings for environment-based config:
+Use multi-environment settings based on `ENV` variable:
 
 ```python
-# app/core/config.py
-from pydantic_settings import SettingsConfigDict
-from pydantic import BaseSettings, Field
+# app/settings/__init__.py
+import os
+from typing import Dict
+from functools import lru_cache
+from dotenv import load_dotenv
+load_dotenv('.env')
+
+from app.settings.development import DevelopmentSettings
+from app.settings.testing import TestingSettings
+from app.settings.production import ProductionSettings
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file='.env',
-        env_file_encoding='utf-8',
-        extra='ignore'
-    )
+@lru_cache()
+def get_settings():
+    env = os.getenv('ENV', None)
+    env_config: Dict = {
+        "development": DevelopmentSettings(),
+        "testing": TestingSettings(),
+        "production": ProductionSettings()
+    }
+    if env is None or env not in env_config:
+        raise EnvironmentError("ENV is undefined!")
+    return env_config[env]
 
+
+settings = get_settings()
+```
+
+```python
+# app/settings/development.py
+from pydantic import Field
+from typing import List
+
+
+class DevelopmentSettings:
     # App
     PROJECT_NAME: str = "FastAPI Project"
     VERSION: str = "1.0.0"
-    API_V1_PREFIX: str = "/api/v1"
-
-    # Environment
-    ENVIRONMENT: str = Field(default="development", validation_alias="ENV")
+    ENVIRONMENT: str = "development"
 
     # Database
-    DATABASE_URL: str  # postgresql+asyncpg://user:pass@host/db
-    DATABASE_URL_SYNC: str = ""  # for alembic
+    SQLALCHEMY_DATABASE_ASYNC_URL: str = "mysql+asyncmy://user:pass@localhost:3306/db"
+    SQLALCHEMY_DATABASE_SYNC_URL: str = "mysql+pymysql://user:pass@localhost:3306/db"
+    SQLALCHEMY_POOL_SIZE: int = 5
+    SQLALCHEMY_POOL_RECYCLE: int = 3600
+    SQLALCHEMY_POOL_PRE_PING: bool = True
+    SQLALCHEMY_ECHO: bool = False
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # JWT
-    SECRET_KEY: str
+    JWT_SECRET_KEY: str = "your-secret-key"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # MongoDB (optional)
-    MONGODB_URL: str = ""
-    MONGODB_DB: str = ""
+    # MongoDB
+    MONGODB_URL: str = "mongodb://localhost:27017"
+    MONGODB_DB: str = "app"
 
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_URL: str = "redis://localhost:6379/2"
 
     # CORS
-    BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+
+    # Swagger
+    SWAGGER_DOCS_URL: str = "/docs"
+    SWAGGER_REDOC_URL: str = "/redoc"
+    OPENAPI_URL: str = "/openapi.json"
+```
+
+## Response Wrapper
+
+Use unified response format:
+
+```python
+# common/response.py
+from typing import Union, List, Dict, Tuple, Optional
+from starlette import status
+from pydantic.types import JsonValue
+from fastapi.responses import JSONResponse
+
+
+class ErrCode(object):
+    """Error codes"""
+    # Common
+    SYSTEM_ERROR = (1000, 'System error')
+    QUERY_NOT_EXISTS = (1001, "Data not exists")
+    QUERY_HAS_EXISTS = (1002, "Data already exists")
+    COMMON_INTERNAL_ERR = (1004, 'Server error')
+    COMMON_PERMISSION_ERR = (1005, 'No access permission')
+    REQUEST_PARAMS_ERROR = (1006, "Request params error")
+    DB_INTEGRITY_ERROR = (1007, 'Data conflict')
+    DB_CONNECTION_ERROR = (1008, 'DB connection failed')
+    TOO_MANY_REQUEST = (1009, "Too many requests")
+
+    # Auth
+    USER_NOT_EXISTS = (2000, 'User not exists')
+    USER_HAS_EXISTS = (2001, 'User already exists')
+    USER_NOT_ACTIVE = (2002, 'User not active')
+    UNAME_OR_PWD_ERROR = (2003, "Username or password error")
+    TOKEN_INVALID_ERROR = (2004, 'Token error')
+    TOKEN_EXPIRED_ERROR = (2005, 'Token expired')
+
+
+def response_ok(
+    data: Optional[JsonValue] = None,
+    msg: str = 'success',
+    status_code = status.HTTP_200_OK,
+    **kwargs
+) -> JSONResponse:
+    """Success response"""
+    ret = {'errcode': 0, 'errmsg': msg}
+    if data is not None:
+        ret['data'] = data
+    ret.update({k: v for k, v in kwargs.items() if k not in ret})
+    return JSONResponse(ret, status_code=status_code)
+
+
+def response_err(
+    errcode: Tuple[int, str],
+    errmsg: Optional[str] = None,
+    detail: Union[List, Dict, None] = None,
+    status_code = status.HTTP_200_OK
+) -> JSONResponse:
+    """Error response"""
+    ret = {"errcode": errcode[0], "errmsg": errcode[1]}
+    if errmsg is not None:
+        ret['errmsg'] = errmsg
+    if detail is not None:
+        ret['detail'] = detail
+    return JSONResponse(ret, status_code=status_code)
+```
+
+## Custom Pagination
+
+```python
+# common/pagination.py
+from typing import Any, Optional
+from fastapi import Query
+from pydantic import BaseModel
+
+
+class PageNumberPagination(BaseModel):
+    """Page number based pagination"""
+    page: int = Query(default=1, ge=1, description="Page number")
+    page_size: int = Query(default=10, ge=1, le=100, description="Page size")
+    total: int = 0
+    data: list = []
+
+    class Config:
+        arbitrary_types_allowed = True
 ```
 
 ## Database Setup
 
-### Async SQLAlchemy with Repository Pattern
+```python
+# app/extensions/db.py
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.settings import settings
+
+# Sync engine
+engine = create_engine(
+    url=settings.SQLALCHEMY_DATABASE_SYNC_URL,
+    pool_size=settings.SQLALCHEMY_POOL_SIZE,
+    pool_recycle=settings.SQLALCHEMY_POOL_RECYCLE,
+    pool_pre_ping=settings.SQLALCHEMY_POOL_PRE_PING,
+    echo=settings.SQLALCHEMY_ECHO
+)
+session = sessionmaker(
+    engine,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False
+)
+
+# Async engine
+async_engine = create_async_engine(
+    url=settings.SQLALCHEMY_DATABASE_ASYNC_URL,
+    pool_size=settings.SQLALCHEMY_POOL_SIZE,
+    pool_recycle=settings.SQLALCHEMY_POOL_RECYCLE,
+    pool_pre_ping=settings.SQLALCHEMY_POOL_PRE_PING,
+    echo=settings.SQLALCHEMY_ECHO
+)
+
+async_session = async_sessionmaker(
+    bind=async_engine,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False
+)
+```
 
 ```python
-# app/db/session.py
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from app.core.config import settings
-
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
-async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
+# app/extensions/__init__.py
+from app.extensions.db import session, async_session
+from app.extensions.cache import get_redis, aioredis
 
 
 async def get_db() -> AsyncSession:
-    async with async_session_maker() as session:
+    async with async_session() as db:
         try:
-            yield session
-            await session.commit()
+            yield db
+            await db.commit()
         except Exception:
-            await session.rollback()
+            await db.rollback()
             raise
         finally:
-            await session.close()
-```
-
-### Repository Pattern
-
-```python
-# app/db/repositories/base.py
-from typing import Generic, TypeVar, Type, Optional
-from sqlalchemy import select, update, delete
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.base import Base
-
-ModelType = TypeVar("ModelType", bound=Base)
-
-
-class Repository(Generic[ModelType]):
-    def __init__(self, model: Type[ModelType], db: AsyncSession):
-        self.model = model
-        self.db = db
-
-    async def get(self, id: int) -> Optional[ModelType]:
-        return await self.db.get(self.model, id)
-
-    async def get_all(self, skip: int = 0, limit: int = 100) -> list[ModelType]:
-        result = await self.db.execute(select(self.model).offset(skip).limit(limit))
-        return result.scalars().all()
-
-    async def create(self, obj: dict) -> ModelType:
-        db_obj = self.model(**obj)
-        self.db.add(db_obj)
-        await self.db.flush()
-        await self.db.refresh(db_obj)
-        return db_obj
-
-    async def update(self, id: int, obj: dict) -> Optional[ModelType]:
-        await self.db.execute(update(self.model).where(self.model.id == id).values(**obj))
-        return await self.get(id)
-
-    async def delete(self, id: int) -> bool:
-        await self.db.execute(delete(self.model).where(self.model.id == id))
-        return True
+            await db.close()
 ```
 
 ## Security & Auth
 
-### Password Hashing (use pwdlib)
+### Password Hashing (pwdlib)
 
 ```python
-# app/core/security.py
+# common/security.py
 from pwdlib import PasswordHash
 
 password_hash = PasswordHash.recommended()
 
 
-def get_password_hash(password: str) -> str:
+def set_password(password: str) -> str:
+    """Hash password"""
     return password_hash.hash(password)
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return password_hash.verify(plain_password, hashed_password)
+def verify_password(password: str, password_hash_value: str) -> bool:
+    """Verify password"""
+    return password_hash.verify(password, password_hash_value)
 ```
 
-### JWT Token Creation
+### JWT Token
 
 ```python
-# app/core/security.py (continued)
+# common/security.py (continued)
 from datetime import datetime, timedelta
-from jose import jwt
-from app.core.config import settings
+import jwt
+from jwt import PyJWTError
+from typing import Union, Any, Optional
+from app.settings import settings
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -257,116 +358,135 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, settings.JWT_REFRESH_SECRET_KEY, algorithm=settings.ALGORITHM)
 ```
 
-### OAuth2 Password Flow
+### OAuth2 with Scopes
 
 ```python
 # app/core/oauth2.py
-from fastapi import Depends, HTTPException, status
+from fastapi import Security, Depends
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from app.core.config import settings
+from common.response import ErrCode, response_err
+from common.security import create_access_token
+
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    return username
+async def get_current_active_user(current_user = Security(get_current_user, scopes=['user'])):
+    return current_user
+
+
+async def get_current_admin_user(current_user = Security(get_current_user, scopes=['admin'])):
+    return current_user
 ```
 
-## Celery Tasks
+## Exception Handlers
 
 ```python
-# app/tasks/celery_app.py
-from celery import Celery
-from app.core.config import settings
-
-celery_app = Celery(
-    "worker",
-    broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_URL,
-    include=["app.tasks.worker"]
-)
-
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    enable_utc=True,
-    task_track_started=True,
-    task_time_limit=30 * 60,  # 30 minutes
-)
+# app/core/exceptions.py
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from sqlalchemy.exc import IntegrityError, OperationalError
+from common.response import ErrCode, response_err
 
 
-# app/tasks/worker.py
-from app.tasks.celery_app import celery_app
+def register_exceptions(app: FastAPI):
+    @app.exception_handler(Exception)
+    async def internal_err_handler(request: Request, exc: Exception):
+        return response_err(ErrCode.COMMON_INTERNAL_ERR, detail=str(exc))
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError):
+        return response_err(ErrCode.REQUEST_PARAMS_ERROR, detail=exc.errors())
 
-@celery_app.task(bind=True)
-def send_email_task(self, email: str, subject: str, body: str):
-    """Example background task"""
-    # Your email sending logic here
-    return {"status": "sent", "email": email}
+    @app.exception_handler(IntegrityError)
+    async def integrity_error_handler(request: Request, exc: IntegrityError):
+        return response_err(ErrCode.DB_INTEGRITY_ERROR, detail=str(exc.detail))
+
+    @app.exception_handler(OperationalError)
+    async def db_connection_error(request: Request, exc: OperationalError):
+        return response_err(ErrCode.DB_CONNECTION_ERROR, detail=str(exc))
 ```
 
 ## API Module Template
 
 ```python
-# app/api/user/router.py
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import list
+# app/api/user/views.py
+from fastapi import APIRouter, Query, Body, Depends, Security, BackgroundTasks
+from sqlalchemy import select
+from typing import Optional
 
-from app.db.session import get_db
-from app.db.repositories.base import Repository
+from common.response import ErrCode, response_ok, response_err
+from common.pagation import PageNumberPagination
+from common.security import set_password
+from app.extensions import get_db, AsyncSession, get_redis, aioredis
+from app.core.oauth2 import get_current_active_user
 from app.api.user.models import User
-from app.api.user.schemas import UserCreate, UserResponse, UserUpdate
-from app.core.security import get_password_hash
-from app.core.oauth2 import get_current_user
+from app.api.user.schemas import UserCreateSchema
+from app.api.user.tasks import generate_user_avatar_task
+
 
 router = APIRouter()
 
 
-@router.get("/", response_model=list[UserResponse])
-async def get_users(
-    skip: int = 0,
-    limit: int = 100,
-    db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
-):
-    repo = Repository(User, db)
-    return await repo.get_all(skip=skip, limit=limit)
-
-
-@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post('/create', summary='Create user')
 async def create_user(
-    user_in: UserCreate,
-    db: AsyncSession = Depends(get_db)
+    background_tasks: BackgroundTasks,
+    args: UserCreateSchema,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+    current_user: User = Security(get_current_active_user, scopes=['admin'])
 ):
-    repo = Repository(User, db)
     # Check if user exists
-    existing = await repo.get_by_field("email", user_in.email)
+    existing = await db.scalar(select(User).where(User.username == args.username))
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        return response_err(ErrCode.UNAME_HAS_OCCUPIED)
 
-    user_data = user_in.model_dump()
-    user_data["hashed_password"] = get_password_hash(user_data.pop("password"))
-    return await repo.create(user_data)
+    user = User(
+        username=args.username,
+        password_hash=set_password(args.password),
+        name=args.name or args.username,
+        is_active=True,
+        role=args.role
+    )
+    db.add(user)
+    await db.commit()
+    background_tasks.add_task(generate_user_avatar_task, user.id)
+    return response_ok(data=user.to_dict(include=['id']))
+
+
+@router.get('/list', summary='User list')
+async def user_list(
+    username: str = Query(default=None, description='Username'),
+    paginate: PageNumberPagination = Depends(),
+    current_user: User = Security(get_current_active_user, scopes=['admin'])
+):
+    query_filter = []
+    if username:
+        query_filter.append(User.username.ilike(f"%{username}%"))
+
+    result_data = await paginate(User, query_filter)
+    return response_ok(**result_data)
+
+
+@router.get('/info', summary='User info')
+async def user_info(
+    current_user: User = Security(get_current_active_user, scopes=['user'])
+):
+    return response_ok(data=current_user.to_dict())
 ```
 
 ## Main Application Entry
@@ -377,36 +497,29 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import settings
-from app.api.router import api_router
+from app.settings import settings
+from app.api.router import register_router
+from app.core.exceptions import register_exceptions
+from app.core.middleware import register_middleware
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Connect to databases, start Celery
+    register_router(app)
     yield
-    # Shutdown: Close connections
 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=settings.SWAGGER_DOCS_URL,
+    redoc_url=settings.SWAGGER_REDOC_URL,
+    openapi_url=settings.OPENAPI_URL,
 )
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Register routes
-app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+register_middleware(app)
+register_exceptions(app)
 ```
 
 ## Docker Configuration
@@ -417,17 +530,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
 COPY . .
 
-# Expose port
 EXPOSE 8000
 
-# Start command
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
@@ -441,8 +550,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - ENVIRONMENT=production
-      - DATABASE_URL=postgresql+asyncpg://user:pass@db:5432/app
+      - ENV=development
+      - SQLALCHEMY_DATABASE_ASYNC_URL=mysql+asyncmy://user:pass@db:3306/app
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
@@ -451,21 +560,17 @@ services:
       - .:/app
 
   db:
-    image: postgres:16
+    image: mysql:8
     environment:
-      POSTGRES_DB: app
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: pass
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: app
+    command: --default-authentication-plugin=mysql_native_password
 
   redis:
     image: redis:7-alpine
-    volumes:
-      - redis_data:/data
 
 volumes:
-  postgres_data:
+  mysql_data:
   redis_data:
 ```
 
@@ -473,14 +578,15 @@ volumes:
 
 When user requests a FastAPI project:
 
-1. **Gather Requirements**: Confirm project name, database choice, auth requirements
-2. **Generate Structure**: Create the directory structure
-3. **Create Core Files**: Generate main.py, config.py, base models
-4. **Setup Auth**: Implement JWT auth, password hashing
-5. **Add Database**: SQLAlchemy models with repository pattern
-6. **Add Cache**: Redis integration
-7. **Add Tasks**: Celery configuration
-8. **Add Docker**: Containerization files
-9. **Write README**: Documentation
+1. **Gather Requirements**: Project name, database, auth requirements
+2. **Generate Structure**: Create directory structure
+3. **Create Config**: Settings with multi-environment support
+4. **Setup Response**: Response wrappers and error codes
+5. **Setup Auth**: JWT with pwdlib password hashing
+6. **Add Database**: SQLAlchemy with sync/async support
+7. **Add Cache**: Redis integration
+8. **Add Tasks**: Celery configuration
+9. **Add Docker**: Containerization files
+10. **Write README**: Documentation
 
-Generate production-grade, async-first code with proper error handling, logging, and type hints.
+Generate production-grade code with proper error handling, logging, and unified response format.
