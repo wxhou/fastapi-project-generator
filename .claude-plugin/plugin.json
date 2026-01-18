@@ -1,0 +1,16 @@
+{
+  "name": "fastapi-project-generator",
+  "version": "1.0.0",
+  "description": "Generate complete FastAPI project skeleton with SQLAlchemy, MongoDB, JWT auth, Redis cache, Celery tasks, Docker, and CRUD generators.",
+  "author": "wxhou",
+  "license": "MIT",
+  "repository": "https://github.com/wxhou/fastapi-project-generator",
+  "skills": [
+    {
+      "name": "fastapi-project-generator",
+      "path": "skills/fastapi-project-generator/SKILL.md",
+      "description": "Generate complete FastAPI project skeleton with SQLAlchemy, MongoDB, JWT auth, Redis cache, Celery tasks, Docker, and CRUD generators. Use when user wants to create or scaffold a FastAPI project."
+    }
+  ],
+  "tags": ["fastapi", "python", "web", "backend", "generator"]
+}
