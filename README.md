@@ -15,6 +15,12 @@ A Claude Code skill for generating production-ready FastAPI project skeletons.
 
 ## Installation
 
+### Via /plugin Command (Recommended)
+
+```bash
+/plugin install https://github.com/wxhou/fastapi-project-generator
+```
+
 ### From Source
 
 ```bash
